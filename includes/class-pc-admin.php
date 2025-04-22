@@ -122,6 +122,9 @@ class PC_Admin {
             global $wpdb;
             $table_name = $wpdb->prefix . 'product_carousels';
 
+            // Clear all caches before saving
+            $this->clear_all_carousel_caches();
+
             if (!empty($_POST['carousel_id'])) {
                 $result = $wpdb->update(
                     $table_name,
@@ -141,6 +144,27 @@ class PC_Admin {
 
         } catch (Exception $e) {
             wp_send_json_error($e->getMessage());
+        }
+    }
+
+    protected function clear_all_carousel_caches() {
+        global $wpdb;
+        
+        // Clear all carousel transients
+        $wpdb->query(
+            "DELETE FROM $wpdb->options 
+             WHERE option_name LIKE '_transient_pc_carousel_%' 
+             OR option_name LIKE '_transient_timeout_pc_carousel_%'"
+        );
+
+        // Clear object cache if available
+        if (wp_using_ext_object_cache()) {
+            wp_cache_flush();
+        }
+
+        // Clear WooCommerce product cache
+        if (function_exists('wc_delete_product_transients')) {
+            wc_delete_product_transients();
         }
     }
 
@@ -221,6 +245,9 @@ class PC_Admin {
             global $wpdb;
             $table_name = $wpdb->prefix . 'product_carousels';
             
+            // Clear caches before deleting
+            $this->clear_all_carousel_caches();
+
             $result = $wpdb->delete(
                 $table_name,
                 ['carousel_id' => $carousel_id],

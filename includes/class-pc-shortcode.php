@@ -29,34 +29,35 @@ class PC_Shortcode {
     }
 
     protected function get_filtered_products($settings) {
-        // Default settings
-        $default_settings = [
-            'products_per_page' => 10,
-            'order_by' => 'popular',
-            'category' => '',
-            'discount_rule' => ''
-        ];
-        
-        // Merge with defaults
-        $settings = wp_parse_args($settings, $default_settings);
-
+        // Base query arguments
         $args = [
             'post_type' => 'product',
             'post_status' => 'publish',
             'posts_per_page' => $settings['products_per_page'],
-            'tax_query' => []
+            'tax_query' => [],
+            'meta_query' => [
+                'relation' => 'AND',
+                [
+                    'key' => '_price',
+                    'value' => '',
+                    'compare' => '!=',
+                    'type' => 'NUMERIC'
+                ]
+            ]
         ];
 
-        // Add category filter if specified
+        // Category filtering
         if (!empty($settings['category'])) {
             $args['tax_query'][] = [
                 'taxonomy' => 'product_cat',
                 'field' => 'term_id',
-                'terms' => $settings['category']
+                'terms' => (int)$settings['category'],
+                'include_children' => true,
+                'operator' => 'IN'
             ];
         }
 
-        // Only apply discount rule if one is selected
+        // Discount rule filtering
         if (!empty($settings['discount_rule']) && class_exists('CTD_DB')) {
             $rule = CTD_DB::get_rule($settings['discount_rule']);
             if ($rule) {
@@ -70,7 +71,7 @@ class PC_Shortcode {
                     ];
                 }
 
-                // Add excluded products to query
+                // Exclude specific products
                 $excluded_products = is_string($rule->excluded_products) ? json_decode($rule->excluded_products, true) : [];
                 if (!empty($excluded_products)) {
                     $args['post__not_in'] = $excluded_products;
@@ -81,37 +82,55 @@ class PC_Shortcode {
         // Set ordering
         switch ($settings['order_by']) {
             case 'popular':
-                $args['meta_key'] = 'total_sales';
-                $args['orderby'] = 'meta_value_num';
-                $args['order'] = 'DESC';
+                $args['meta_query'][] = [
+                    'key' => 'total_sales',
+                    'type' => 'NUMERIC'
+                ];
+                $args['orderby'] = ['meta_value_num' => 'DESC', 'date' => 'DESC'];
                 break;
+                
             case 'latest':
-                $args['orderby'] = 'date';
-                $args['order'] = 'DESC';
+                $args['orderby'] = ['date' => 'DESC', 'ID' => 'DESC'];
                 break;
+                
             case 'rating':
-                $args['meta_key'] = '_wc_average_rating';
-                $args['orderby'] = 'meta_value_num';
-                $args['order'] = 'DESC';
+                $args['meta_query'][] = [
+                    'key' => '_wc_average_rating',
+                    'type' => 'NUMERIC'
+                ];
+                $args['orderby'] = ['meta_value_num' => 'DESC', 'date' => 'DESC'];
                 break;
+                
             case 'price_low':
-                $args['meta_key'] = '_price';
-                $args['orderby'] = 'meta_value_num';
-                $args['order'] = 'ASC';
+                $args['meta_query'][] = [
+                    'key' => '_price',
+                    'type' => 'NUMERIC'
+                ];
+                $args['orderby'] = ['meta_value_num' => 'ASC', 'date' => 'DESC'];
                 break;
+                
             case 'price_high':
-                $args['meta_key'] = '_price';
-                $args['orderby'] = 'meta_value_num';
-                $args['order'] = 'DESC';
+                $args['meta_query'][] = [
+                    'key' => '_price',
+                    'type' => 'NUMERIC'
+                ];
+                $args['orderby'] = ['meta_value_num' => 'DESC', 'date' => 'DESC'];
                 break;
         }
 
-        // Multiple tax queries need a relationship
+        // Set tax query relationship if multiple conditions exist
         if (count($args['tax_query']) > 1) {
             $args['tax_query']['relation'] = 'AND';
         }
 
+        // Run the query
         $query = new WP_Query($args);
+        
+        // Debug query if needed
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('Product Carousel Query: ' . print_r($query->request, true));
+        }
+
         return $query->posts;
     }
 
@@ -127,6 +146,12 @@ class PC_Shortcode {
             return '<!-- Carousel Error: Carousel not found -->';
         }
         
+        $settings = is_string($carousel->settings) ? json_decode($carousel->settings, true) : [];
+        if (!is_array($settings)) {
+            error_log('Carousel Error: Invalid settings format');
+            return '<!-- Carousel Error: Invalid settings format -->';
+        }
+
         // Default settings
         $default_settings = [
             'desktop_columns' => 5,
@@ -138,22 +163,14 @@ class PC_Shortcode {
             'discount_rule' => ''
         ];
         
-        // Parse settings with defaults
-        $settings = wp_parse_args(
-            is_string($carousel->settings) ? json_decode($carousel->settings, true) : [],
-            $default_settings
-        );
-
-        if (!is_array($settings)) {
-            error_log('Carousel Error: Invalid settings format');
-            return '<!-- Carousel Error: Invalid settings format -->';
-        }
+        // Merge with defaults
+        $settings = wp_parse_args($settings, $default_settings);
 
         $products = $this->get_filtered_products($settings);
         if (empty($products)) {
             return '<!-- No products found -->';
         }
-        
+
         ob_start();
         ?>
         <div class="pc-carousel-wrapper"
@@ -198,14 +215,7 @@ class PC_Shortcode {
         $product_rating = $product->get_average_rating();
         $product_tag = get_post_meta($product->get_id(), '_product_tag', true) ?: 'BEWAKOOF BIRTHDAY BASH';
         $product_categories = wc_get_product_category_list($product->get_id(), ', ', '<span class="brand-name">', '</span>');
-        $product_cat_ids = wp_get_post_terms($product->get_id(), 'product_cat', ['fields' => 'ids']);
-
-        foreach ($product_cat_ids as $cat_id) {
-            $ancestors = get_ancestors($cat_id, 'product_cat');
-            $product_cat_ids = array_merge($product_cat_ids, $ancestors);
-        }
-        $product_cat_ids = array_unique($product_cat_ids);
-
+        
         $matching_rule = $this->get_matching_discount_rule($product);
         
         ob_start();
