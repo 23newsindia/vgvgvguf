@@ -28,135 +28,91 @@ class PC_Shortcode {
         ]);
     }
 
-    protected function get_discount_rule_tax_query($rule) {
-        $rule_categories = is_string($rule->categories) ? json_decode($rule->categories, true) : [];
-        if (empty($rule_categories)) return [];
+    protected function get_filtered_products($settings) {
+        // Default settings
+        $default_settings = [
+            'products_per_page' => 10,
+            'order_by' => 'popular',
+            'category' => '',
+            'discount_rule' => ''
+        ];
+        
+        // Merge with defaults
+        $settings = wp_parse_args($settings, $default_settings);
 
-        return [
-            [
+        $args = [
+            'post_type' => 'product',
+            'post_status' => 'publish',
+            'posts_per_page' => $settings['products_per_page'],
+            'tax_query' => []
+        ];
+
+        // Add category filter if specified
+        if (!empty($settings['category'])) {
+            $args['tax_query'][] = [
                 'taxonomy' => 'product_cat',
                 'field' => 'term_id',
-                'terms' => $rule_categories,
-                'operator' => 'IN',
-                'include_children' => true
-            ]
-        ];
-    }
-
-    protected function get_discount_rule_meta_query($rule) {
-        $excluded_products = is_string($rule->excluded_products) ? json_decode($rule->excluded_products, true) : [];
-        $meta_query = [];
-
-        if (!empty($excluded_products)) {
-            $meta_query[] = [
-                'key' => '_id',
-                'value' => $excluded_products,
-                'compare' => 'NOT IN'
+                'terms' => $settings['category']
             ];
         }
 
-        return $meta_query;
-    }
-
-    protected function get_cached_carousel($slug) {
-        $transient_key = 'pc_carousel_' . md5($slug);
-        $cached = get_transient($transient_key);
-        
-        if ($cached !== false) {
-            return $cached;
-        }
-        
-        $carousel = PC_DB::get_carousel($slug);
-        set_transient($transient_key, $carousel, HOUR_IN_SECONDS);
-        
-        return $carousel;
-    }
-
-    protected function get_filtered_products($settings) {
-        $args = [
-            'status' => 'publish',
-            'limit' => $settings['products_per_page'],
-            'return' => 'objects'
-        ];
-
+        // Only apply discount rule if one is selected
         if (!empty($settings['discount_rule']) && class_exists('CTD_DB')) {
             $rule = CTD_DB::get_rule($settings['discount_rule']);
             if ($rule) {
-                $args['tax_query'] = $this->get_discount_rule_tax_query($rule);
-                $args['meta_query'] = $this->get_discount_rule_meta_query($rule);
+                $rule_categories = is_string($rule->categories) ? json_decode($rule->categories, true) : [];
+                if (!empty($rule_categories)) {
+                    $args['tax_query'][] = [
+                        'taxonomy' => 'product_cat',
+                        'field' => 'term_id',
+                        'terms' => $rule_categories,
+                        'operator' => 'IN'
+                    ];
+                }
+
+                // Add excluded products to query
+                $excluded_products = is_string($rule->excluded_products) ? json_decode($rule->excluded_products, true) : [];
+                if (!empty($excluded_products)) {
+                    $args['post__not_in'] = $excluded_products;
+                }
             }
-        } 
-        elseif (!empty($settings['category'])) {
-            $args['tax_query'] = [
-                [
-                    'taxonomy' => 'product_cat',
-                    'field' => 'term_id', 
-                    'terms' => [$settings['category']]
-                ]
-            ];
         }
 
+        // Set ordering
         switch ($settings['order_by']) {
             case 'popular':
-                $args['orderby'] = 'meta_value_num';
                 $args['meta_key'] = 'total_sales';
+                $args['orderby'] = 'meta_value_num';
+                $args['order'] = 'DESC';
                 break;
             case 'latest':
                 $args['orderby'] = 'date';
                 $args['order'] = 'DESC';
                 break;
             case 'rating':
-                $args['orderby'] = 'meta_value_num';
                 $args['meta_key'] = '_wc_average_rating';
+                $args['orderby'] = 'meta_value_num';
                 $args['order'] = 'DESC';
                 break;
             case 'price_low':
-                $args['orderby'] = 'meta_value_num';
                 $args['meta_key'] = '_price';
+                $args['orderby'] = 'meta_value_num';
                 $args['order'] = 'ASC';
                 break;
             case 'price_high':
-                $args['orderby'] = 'meta_value_num';
                 $args['meta_key'] = '_price';
+                $args['orderby'] = 'meta_value_num';
                 $args['order'] = 'DESC';
                 break;
-            default:
-                $args['orderby'] = 'menu_order title';
         }
 
-        try {
-            return wc_get_products($args);
-        } catch (Exception $e) {
-            error_log('Product Carousel Error: ' . $e->getMessage());
-            return [];
+        // Multiple tax queries need a relationship
+        if (count($args['tax_query']) > 1) {
+            $args['tax_query']['relation'] = 'AND';
         }
-    }
 
-    protected function get_matching_discount_rule($product) {
-        if (!class_exists('CTD_DB')) return null;
-        
-        $rules = CTD_DB::get_all_rules();
-        $product_id = $product->get_id();
-        $product_cats = wp_get_post_terms($product_id, 'product_cat', ['fields' => 'ids']);
-        
-        foreach ($product_cats as $cat_id) {
-            $ancestors = get_ancestors($cat_id, 'product_cat');
-            $product_cats = array_merge($product_cats, $ancestors);
-        }
-        $product_cats = array_unique($product_cats);
-
-        foreach ($rules as $rule) {
-            $rule_categories = is_string($rule->categories) ? json_decode($rule->categories, true) : [];
-            $excluded_products = is_string($rule->excluded_products) ? json_decode($rule->excluded_products, true) : [];
-            
-            if (in_array($product_id, $excluded_products)) continue;
-            
-            if (array_intersect($product_cats, $rule_categories)) {
-                return $rule;
-            }
-        }
-        
-        return null;
+        $query = new WP_Query($args);
+        return $query->posts;
     }
 
     protected function get_carousel_html($slug) {
@@ -171,7 +127,23 @@ class PC_Shortcode {
             return '<!-- Carousel Error: Carousel not found -->';
         }
         
-        $settings = is_string($carousel->settings) ? json_decode($carousel->settings, true) : [];
+        // Default settings
+        $default_settings = [
+            'desktop_columns' => 5,
+            'mobile_columns' => 2,
+            'visible_mobile' => 2,
+            'products_per_page' => 10,
+            'order_by' => 'popular',
+            'category' => '',
+            'discount_rule' => ''
+        ];
+        
+        // Parse settings with defaults
+        $settings = wp_parse_args(
+            is_string($carousel->settings) ? json_decode($carousel->settings, true) : [],
+            $default_settings
+        );
+
         if (!is_array($settings)) {
             error_log('Carousel Error: Invalid settings format');
             return '<!-- Carousel Error: Invalid settings format -->';
@@ -192,7 +164,12 @@ class PC_Shortcode {
             
             <div class="pc-carousel-container">
                 <?php foreach ($products as $product) : ?>
-                    <?php echo $this->render_product($product); ?>
+                    <?php 
+                    $product = wc_get_product($product);
+                    if ($product) {
+                        echo $this->render_product($product);
+                    }
+                    ?>
                 <?php endforeach; ?>
             </div>
             
@@ -305,5 +282,46 @@ class PC_Shortcode {
         </div>
         <?php
         return ob_get_clean();
+    }
+
+    protected function get_cached_carousel($slug) {
+        $transient_key = 'pc_carousel_' . md5($slug);
+        $cached = get_transient($transient_key);
+        
+        if ($cached !== false) {
+            return $cached;
+        }
+        
+        $carousel = PC_DB::get_carousel($slug);
+        set_transient($transient_key, $carousel, HOUR_IN_SECONDS);
+        
+        return $carousel;
+    }
+
+    protected function get_matching_discount_rule($product) {
+        if (!class_exists('CTD_DB')) return null;
+        
+        $rules = CTD_DB::get_all_rules();
+        $product_id = $product->get_id();
+        $product_cats = wp_get_post_terms($product_id, 'product_cat', ['fields' => 'ids']);
+        
+        foreach ($product_cats as $cat_id) {
+            $ancestors = get_ancestors($cat_id, 'product_cat');
+            $product_cats = array_merge($product_cats, $ancestors);
+        }
+        $product_cats = array_unique($product_cats);
+
+        foreach ($rules as $rule) {
+            $rule_categories = is_string($rule->categories) ? json_decode($rule->categories, true) : [];
+            $excluded_products = is_string($rule->excluded_products) ? json_decode($rule->excluded_products, true) : [];
+            
+            if (in_array($product_id, $excluded_products)) continue;
+            
+            if (array_intersect($product_cats, $rule_categories)) {
+                return $rule;
+            }
+        }
+        
+        return null;
     }
 }

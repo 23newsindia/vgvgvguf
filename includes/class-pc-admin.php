@@ -33,18 +33,17 @@ class PC_Admin {
         wp_enqueue_style('select2', 'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css');
         wp_enqueue_script('select2', 'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js', ['jquery']);
         
-        // Update enqueue_assets() localization
-wp_localize_script('pc-admin-js', 'pc_admin_vars', [
-    'ajax_url' => admin_url('admin-ajax.php'),
-    'nonce' => wp_create_nonce('pc_admin_nonce'),
-    'categories' => $this->get_product_categories(),
-    'discount_rules' => $this->get_discount_rules(), // Add this line
-    'translations' => [
-        'select_category' => __('Select a category', 'product-carousel'),
-        'select_rule' => __('Select a discount rule', 'product-carousel'), // Add this
-        'no_category' => __('All Categories', 'product-carousel')
-    ]
-]);
+        wp_localize_script('pc-admin-js', 'pc_admin_vars', [
+            'ajax_url' => admin_url('admin-ajax.php'),
+            'nonce' => wp_create_nonce('pc_admin_nonce'),
+            'categories' => $this->get_product_categories(),
+            'discount_rules' => $this->get_discount_rules(),
+            'translations' => [
+                'select_category' => __('Select a category', 'product-carousel'),
+                'select_rule' => __('Select a discount rule', 'product-carousel'),
+                'no_category' => __('All Categories', 'product-carousel')
+            ]
+        ]);
     }
 
     protected function get_product_categories() {
@@ -54,32 +53,35 @@ wp_localize_script('pc-admin-js', 'pc_admin_vars', [
         ]);
         
         $options = [];
-        foreach ($categories as $category) {
-            $options[] = [
-                'id' => $category->term_id,
-                'text' => $category->name
-            ];
+        if (!is_wp_error($categories)) {
+            foreach ($categories as $category) {
+                $options[] = [
+                    'id' => $category->term_id,
+                    'text' => $category->name
+                ];
+            }
         }
         
         return $options;
     }
     
-    // Add the new method here
-protected function get_discount_rules() {
-    if (!class_exists('CTD_DB')) return [];
-    
-    $rules = CTD_DB::get_all_rules();
-    $options = [];
-    
-    foreach ($rules as $rule) {
-        $options[] = [
-            'id' => $rule->rule_id,
-            'text' => $rule->name
-        ];
+    protected function get_discount_rules() {
+        if (!class_exists('CTD_DB')) return [];
+        
+        $rules = CTD_DB::get_all_rules();
+        $options = [];
+        
+        if (!empty($rules)) {
+            foreach ($rules as $rule) {
+                $options[] = [
+                    'id' => $rule->rule_id,
+                    'text' => $rule->name
+                ];
+            }
+        }
+        
+        return $options;
     }
-    
-    return $options;
-}
 
     public function save_carousel_ajax() {
         try {
@@ -91,31 +93,25 @@ protected function get_discount_rules() {
                 throw new Exception(__('Permission denied', 'product-carousel'));
             }
 
-            // Validate required fields
             if (empty($_POST['name'])) {
                 throw new Exception(__('Name is required', 'product-carousel'));
             }
 
-            // Get and validate settings
             $settings = json_decode(stripslashes($_POST['settings']), true);
             if (json_last_error() !== JSON_ERROR_NONE || !is_array($settings)) {
                 throw new Exception(__('Invalid settings data', 'product-carousel'));
             }
 
-            // Sanitize settings
-            // Update sanitized settings in PC_Admin::save_carousel_ajax()
-// Update sanitized settings in PC_Admin::save_carousel_ajax()
-$sanitized_settings = [
-    'desktop_columns' => absint($settings['desktop_columns']),
-    'mobile_columns' => absint($settings['mobile_columns']),
-    'visible_mobile' => absint($settings['visible_mobile']),
-    'category' => sanitize_text_field($settings['category']),
-    'discount_rule' => absint($settings['discount_rule']), // Add this line
-    'order_by' => sanitize_text_field($settings['order_by']),
-    'products_per_page' => absint($settings['products_per_page'])
-];
+            $sanitized_settings = [
+                'desktop_columns' => absint($settings['desktop_columns']),
+                'mobile_columns' => absint($settings['mobile_columns']),
+                'visible_mobile' => absint($settings['visible_mobile']),
+                'category' => sanitize_text_field($settings['category']),
+                'discount_rule' => absint($settings['discount_rule']),
+                'order_by' => sanitize_text_field($settings['order_by']),
+                'products_per_page' => absint($settings['products_per_page'])
+            ];
 
-            // Prepare data for database
             $data = [
                 'name' => sanitize_text_field($_POST['name']),
                 'slug' => sanitize_title($_POST['slug']),
@@ -126,7 +122,6 @@ $sanitized_settings = [
             global $wpdb;
             $table_name = $wpdb->prefix . 'product_carousels';
 
-            // Insert or update based on carousel_id
             if (!empty($_POST['carousel_id'])) {
                 $result = $wpdb->update(
                     $table_name,
@@ -159,24 +154,51 @@ $sanitized_settings = [
                 throw new Exception(__('Permission denied', 'product-carousel'));
             }
 
-            $carousel_id = absint($_POST['id']);
-            if (!$carousel_id) {
+            if (empty($_POST['id'])) {
                 throw new Exception(__('Invalid carousel ID', 'product-carousel'));
             }
 
-            $carousel = PC_DB::get_carousel_by_id($carousel_id);
+            $carousel_id = absint($_POST['id']);
+            
+            global $wpdb;
+            $table_name = $wpdb->prefix . 'product_carousels';
+            
+            $carousel = $wpdb->get_row($wpdb->prepare(
+                "SELECT * FROM {$table_name} WHERE carousel_id = %d",
+                $carousel_id
+            ));
+
             if (!$carousel) {
                 throw new Exception(__('Carousel not found', 'product-carousel'));
             }
+
+            $settings = json_decode($carousel->settings, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                $settings = [];
+            }
+
+            // Ensure all required settings exist
+            $default_settings = [
+                'desktop_columns' => 5,
+                'mobile_columns' => 2,
+                'visible_mobile' => 2,
+                'category' => '',
+                'discount_rule' => '',
+                'order_by' => 'popular',
+                'products_per_page' => 10
+            ];
+
+            $settings = wp_parse_args($settings, $default_settings);
 
             wp_send_json_success([
                 'id' => $carousel->carousel_id,
                 'name' => $carousel->name,
                 'slug' => $carousel->slug,
-                'settings' => json_decode($carousel->settings, true)
+                'settings' => $settings
             ]);
 
         } catch (Exception $e) {
+            error_log('Product Carousel Error: ' . $e->getMessage());
             wp_send_json_error($e->getMessage());
         }
     }
@@ -196,7 +218,15 @@ $sanitized_settings = [
                 throw new Exception(__('Invalid carousel ID', 'product-carousel'));
             }
 
-            $result = PC_DB::delete_carousel($carousel_id);
+            global $wpdb;
+            $table_name = $wpdb->prefix . 'product_carousels';
+            
+            $result = $wpdb->delete(
+                $table_name,
+                ['carousel_id' => $carousel_id],
+                ['%d']
+            );
+
             if ($result === false) {
                 throw new Exception(__('Failed to delete carousel', 'product-carousel'));
             }
@@ -230,7 +260,9 @@ $sanitized_settings = [
     }
 
     protected function render_carousels_table() {
-        $carousels = PC_DB::get_all_carousels();
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'product_carousels';
+        $carousels = $wpdb->get_results("SELECT * FROM {$table_name} ORDER BY created_at DESC");
         ?>
         <table class="wp-list-table widefat fixed striped pc-carousels-table">
             <thead>
@@ -300,13 +332,12 @@ $sanitized_settings = [
                         </select>
                     </div>
                     
-                     <!-- Add the discount rule select group here -->
-                <div class="pc-form-group">
-                    <label for="pc-discount-rule"><?php esc_html_e('Discount Rule', 'product-carousel'); ?></label>
-                    <select id="pc-discount-rule" class="pc-discount-rule-select" style="width:100%">
-                        <option value=""><?php esc_html_e('No Rule Selected', 'product-carousel'); ?></option>
-                    </select>
-                </div>
+                    <div class="pc-form-group">
+                        <label for="pc-discount-rule"><?php esc_html_e('Discount Rule', 'product-carousel'); ?></label>
+                        <select id="pc-discount-rule" class="pc-discount-rule-select" style="width:100%">
+                            <option value=""><?php esc_html_e('No Rule Selected', 'product-carousel'); ?></option>
+                        </select>
+                    </div>
 
                     <div class="pc-form-group">
                         <label for="pc-order-by"><?php esc_html_e('Order By', 'product-carousel'); ?></label>
