@@ -27,15 +27,28 @@ if (!in_array('woocommerce/woocommerce.php', apply_filters('active_plugins', get
 
 // Include core files
 require_once PC_PLUGIN_DIR . 'includes/class-pc-db.php';
+require_once PC_PLUGIN_DIR . 'includes/class-pc-cache.php';
 require_once PC_PLUGIN_DIR . 'includes/class-pc-admin.php';
 require_once PC_PLUGIN_DIR . 'includes/class-pc-frontend.php';
 require_once PC_PLUGIN_DIR . 'includes/class-pc-shortcode.php';
 
 // Initialize components
-register_activation_hook(__FILE__, ['PC_DB', 'create_tables']);
-add_action('plugins_loaded', function() {
+function pc_init() {
+    // Initialize database
     PC_DB::check_tables();
+    
+    // Initialize cache
+    global $pc_cache;
+    $pc_cache = new PC_Cache();
+    
+    // Initialize other components
     new PC_Admin();
     new PC_Frontend();
     new PC_Shortcode();
-});
+}
+
+// Register activation hook
+register_activation_hook(__FILE__, ['PC_DB', 'create_tables']);
+
+// Initialize plugin
+add_action('plugins_loaded', 'pc_init');

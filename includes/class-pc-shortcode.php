@@ -34,7 +34,9 @@ class PC_Shortcode {
             'post_type' => 'product',
             'post_status' => 'publish',
             'posts_per_page' => $settings['products_per_page'],
-            'tax_query' => [],
+            'tax_query' => [
+                'relation' => 'AND'
+            ],
             'meta_query' => [
                 'relation' => 'AND',
                 [
@@ -46,35 +48,77 @@ class PC_Shortcode {
             ]
         ];
 
-        // Category filtering
+        // Handle category filtering
         if (!empty($settings['category'])) {
+            // Get the selected category and all its child categories
+            $category_terms = get_term_children($settings['category'], 'product_cat');
+            $category_terms[] = $settings['category'];
+            
             $args['tax_query'][] = [
                 'taxonomy' => 'product_cat',
                 'field' => 'term_id',
-                'terms' => (int)$settings['category'],
-                'include_children' => true,
-                'operator' => 'IN'
+                'terms' => $category_terms,
+                'operator' => 'IN',
+                'include_children' => true
             ];
         }
 
-        // Discount rule filtering
+        // Handle discount rule filtering
         if (!empty($settings['discount_rule']) && class_exists('CTD_DB')) {
             $rule = CTD_DB::get_rule($settings['discount_rule']);
             if ($rule) {
+                // Get rule categories
                 $rule_categories = is_string($rule->categories) ? json_decode($rule->categories, true) : [];
+                
+                // Get excluded products
+                $excluded_products = is_string($rule->excluded_products) ? json_decode($rule->excluded_products, true) : [];
+
                 if (!empty($rule_categories)) {
-                    $args['tax_query'][] = [
-                        'taxonomy' => 'product_cat',
-                        'field' => 'term_id',
-                        'terms' => $rule_categories,
-                        'operator' => 'IN'
-                    ];
+                    // If a category is selected, we need to find the intersection
+                    if (!empty($settings['category'])) {
+                        // Get all child categories of the selected category
+                        $selected_cat_children = get_term_children($settings['category'], 'product_cat');
+                        $selected_cat_tree = array_merge([$settings['category']], $selected_cat_children);
+                        
+                        // Get all child categories of rule categories
+                        $rule_cat_children = [];
+                        foreach ($rule_categories as $rule_cat) {
+                            $children = get_term_children($rule_cat, 'product_cat');
+                            $rule_cat_children = array_merge($rule_cat_children, $children);
+                        }
+                        $rule_cat_tree = array_merge($rule_categories, $rule_cat_children);
+                        
+                        $category_intersection = array_intersect($selected_cat_tree, $rule_cat_tree);
+                        
+                        if (empty($category_intersection)) {
+                            // No intersection means no products should be shown
+                            return [];
+                        }
+                    } else {
+                        // No specific category selected, use rule categories and their children
+                        $rule_cat_children = [];
+                        foreach ($rule_categories as $rule_cat) {
+                            $children = get_term_children($rule_cat, 'product_cat');
+                            $rule_cat_children = array_merge($rule_cat_children, $children);
+                        }
+                        $all_rule_cats = array_merge($rule_categories, $rule_cat_children);
+                        
+                        $args['tax_query'][] = [
+                            'taxonomy' => 'product_cat',
+                            'field' => 'term_id',
+                            'terms' => $all_rule_cats,
+                            'operator' => 'IN',
+                            'include_children' => true
+                        ];
+                    }
                 }
 
                 // Exclude specific products
-                $excluded_products = is_string($rule->excluded_products) ? json_decode($rule->excluded_products, true) : [];
                 if (!empty($excluded_products)) {
-                    $args['post__not_in'] = $excluded_products;
+                    if (!isset($args['post__not_in'])) {
+                        $args['post__not_in'] = [];
+                    }
+                    $args['post__not_in'] = array_merge($args['post__not_in'], $excluded_products);
                 }
             }
         }
@@ -118,19 +162,13 @@ class PC_Shortcode {
                 break;
         }
 
-        // Set tax query relationship if multiple conditions exist
-        if (count($args['tax_query']) > 1) {
-            $args['tax_query']['relation'] = 'AND';
+        // Debug query if needed
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('Product Carousel Query: ' . print_r($args, true));
         }
 
         // Run the query
         $query = new WP_Query($args);
-        
-        // Debug query if needed
-        if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log('Product Carousel Query: ' . print_r($query->request, true));
-        }
-
         return $query->posts;
     }
 

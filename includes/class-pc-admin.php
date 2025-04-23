@@ -1,6 +1,11 @@
 <?php
 class PC_Admin {
+    private $cache;
+
     public function __construct() {
+        global $pc_cache;
+        $this->cache = $pc_cache;
+
         add_action('admin_menu', [$this, 'add_admin_menu']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
         add_action('wp_ajax_pc_save_carousel', [$this, 'save_carousel_ajax']);
@@ -123,17 +128,26 @@ class PC_Admin {
             $table_name = $wpdb->prefix . 'product_carousels';
 
             // Clear all caches before saving
-            $this->clear_all_carousel_caches();
+            $this->cache->clear_all_cache();
 
             if (!empty($_POST['carousel_id'])) {
+                $carousel_id = absint($_POST['carousel_id']);
                 $result = $wpdb->update(
                     $table_name,
                     $data,
-                    ['carousel_id' => absint($_POST['carousel_id'])]
+                    ['carousel_id' => $carousel_id]
                 );
+                
+                if ($result !== false) {
+                    do_action('pc_carousel_settings_updated', $carousel_id);
+                }
             } else {
                 $data['created_at'] = current_time('mysql');
                 $result = $wpdb->insert($table_name, $data);
+                
+                if ($result !== false) {
+                    do_action('pc_carousel_settings_updated', $wpdb->insert_id);
+                }
             }
 
             if ($result === false) {
@@ -144,27 +158,6 @@ class PC_Admin {
 
         } catch (Exception $e) {
             wp_send_json_error($e->getMessage());
-        }
-    }
-
-    protected function clear_all_carousel_caches() {
-        global $wpdb;
-        
-        // Clear all carousel transients
-        $wpdb->query(
-            "DELETE FROM $wpdb->options 
-             WHERE option_name LIKE '_transient_pc_carousel_%' 
-             OR option_name LIKE '_transient_timeout_pc_carousel_%'"
-        );
-
-        // Clear object cache if available
-        if (wp_using_ext_object_cache()) {
-            wp_cache_flush();
-        }
-
-        // Clear WooCommerce product cache
-        if (function_exists('wc_delete_product_transients')) {
-            wc_delete_product_transients();
         }
     }
 
@@ -246,7 +239,7 @@ class PC_Admin {
             $table_name = $wpdb->prefix . 'product_carousels';
             
             // Clear caches before deleting
-            $this->clear_all_carousel_caches();
+            $this->cache->clear_carousel_cache($carousel_id);
 
             $result = $wpdb->delete(
                 $table_name,
